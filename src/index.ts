@@ -109,6 +109,7 @@ async function processKeyshares(
   };
 }
 
+function createServer() {
 const server = new McpServer({
   name: 'blackbox-protocol',
   version: '0.1.0',
@@ -1049,6 +1050,9 @@ server.tool(
   },
 );
 
+return server;
+}
+
 // ─── Start Server ───────────────────────────────────────────────────────────
 
 async function main() {
@@ -1112,7 +1116,8 @@ async function main() {
         if (sid) sessions.delete(sid);
       };
 
-      await server.connect(transport);
+      const sessionServer = createServer();
+      await sessionServer.connect(transport);
       await transport.handleRequest(req, res);
 
       const sid = (transport as any).sessionId;
@@ -1125,7 +1130,7 @@ async function main() {
     });
   } else {
     const transport = new StdioServerTransport();
-    await server.connect(transport);
+    await createServer().connect(transport);
   }
 }
 

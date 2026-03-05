@@ -35,15 +35,26 @@ BlackBox MCP Server
 
 ## Supported Chains & Denominations
 
+50 registered merkle roots across 7 chains, 4 tokens, and 14 chain+token combinations:
+
 | Chain | Token | Denominations |
 |-------|-------|---------------|
-| Sepolia | ETH | 0.001 |
-| Base Sepolia | ETH | 0.001 |
-| BNB Testnet | TBNB | 0.01 |
-| BNB Testnet | USDC | 1 (18 decimals) |
-| Polygon Amoy | POL | 1 |
-| Hyperliquid Testnet | HYPE | 0.01 |
-| Solana Devnet | SOL | 0.1 |
+| Sepolia | ETH | 0.001, 0.01, 0.05, 0.1, 0.5, 1 |
+| Sepolia | USDC | 1, 2, 5, 10 |
+| Sepolia | LINK | 0.5, 1, 2 |
+| Base Sepolia | ETH | 0.001, 0.01, 0.05, 0.1 |
+| Base Sepolia | USDC | 1, 2, 5 |
+| BNB Testnet | TBNB | 0.01, 0.05, 0.1, 0.5 |
+| BNB Testnet | USDC | 1, 2, 5 |
+| BNB Testnet | LINK | 0.5, 1, 2 |
+| Polygon Amoy | POL | 1, 2 |
+| Polygon Amoy | USDC | 1, 2, 5 |
+| Hyperliquid Testnet | HYPE | 0.01, 0.1, 0.5 |
+| Hyperliquid Testnet | USDC | 1, 2, 5 |
+| Solana Devnet | SOL | 0.1, 0.5, 1 |
+| Solana Devnet | USDC | 1, 2, 5 |
+
+> Use the `get_available_denominations` tool to query live denominations — new ones are added regularly.
 
 ## Quick Start
 

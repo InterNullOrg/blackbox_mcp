@@ -1,0 +1,20 @@
+services:
+  blackbox-mcp:
+    build: .
+    ports:
+      - "3001:3001"
+    environment:
+      - MCP_TRANSPORT=http
+      - PORT=3001
+      - CORS_ORIGIN=*
+      - DKG_NODE_1=https://theblackbox.network/node1
+      - DKG_NODE_2=https://theblackbox.network/node2
+      - DKG_NODE_3=https://theblackbox.network/node3
+      - DKG_NODE_4=https://theblackbox.network/node4
+      - DKG_NODE_5=https://theblackbox.network/node5
+    restart: unless-stopped
+    volumes:
+      - wallets:/app/wallets
+
+volumes:
+  wallets:

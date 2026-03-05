@@ -2,6 +2,7 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
 import { ethers } from 'ethers';
 import { loadConfig } from './config.js';
@@ -1051,8 +1052,81 @@ server.tool(
 // ─── Start Server ───────────────────────────────────────────────────────────
 
 async function main() {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  const mode = process.env.MCP_TRANSPORT || 'stdio';
+
+  if (mode === 'http') {
+    const http = await import('node:http');
+    const crypto = await import('node:crypto');
+
+    const port = parseInt(process.env.PORT || '3001');
+    const sessions = new Map<string, StreamableHTTPServerTransport>();
+
+    const httpServer = http.createServer(async (req, res) => {
+      // CORS headers
+      res.setHeader('Access-Control-Allow-Origin', process.env.CORS_ORIGIN || '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, mcp-session-id');
+      res.setHeader('Access-Control-Expose-Headers', 'mcp-session-id');
+
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+
+      // Health check
+      if (req.url === '/health') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'ok', transport: 'streamable-http', sessions: sessions.size }));
+        return;
+      }
+
+      if (req.url !== '/mcp') {
+        res.writeHead(404);
+        res.end('Not found. Use /mcp for MCP endpoint or /health for health check.');
+        return;
+      }
+
+      // Check for existing session
+      const sessionId = req.headers['mcp-session-id'] as string | undefined;
+
+      if (sessionId && sessions.has(sessionId)) {
+        const transport = sessions.get(sessionId)!;
+        await transport.handleRequest(req, res);
+        return;
+      }
+
+      if (sessionId && !sessions.has(sessionId)) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Session not found. Start a new session without mcp-session-id header.' }));
+        return;
+      }
+
+      // New session
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => crypto.randomUUID(),
+      });
+
+      transport.onclose = () => {
+        const sid = (transport as any).sessionId;
+        if (sid) sessions.delete(sid);
+      };
+
+      await server.connect(transport);
+      await transport.handleRequest(req, res);
+
+      const sid = (transport as any).sessionId;
+      if (sid) sessions.set(sid, transport);
+    });
+
+    httpServer.listen(port, () => {
+      console.error(`BlackBox MCP server running on http://0.0.0.0:${port}/mcp`);
+      console.error(`Health check: http://0.0.0.0:${port}/health`);
+    });
+  } else {
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+  }
 }
 
 main().catch(console.error);

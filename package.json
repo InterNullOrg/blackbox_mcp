@@ -1,7 +1,7 @@
 {
-  "name": "@blackbox/mcp-server",
+  "name": "@anthropic-ai/blackbox-mcp",
   "version": "0.1.0",
-  "description": "MCP server for AI agents to interact with the BlackBox protocol",
+  "description": "MCP server for AI agents to interact with the BlackBox privacy protocol — deposit, claim keys, withdraw across chains via 3-of-5 distributed threshold cryptography",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
@@ -10,7 +10,37 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
-    "dev": "tsx src/index.ts"
+    "start:http": "MCP_TRANSPORT=http node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "dev:http": "MCP_TRANSPORT=http tsx src/index.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "ai-agent",
+    "blockchain",
+    "privacy",
+    "dkg",
+    "threshold-cryptography",
+    "cross-chain",
+    "ethereum",
+    "solana",
+    "ecdsa"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/InterNullOrg/blackbox_mcp.git"
+  },
+  "homepage": "https://theblackbox.network",
+  "license": "MIT",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",

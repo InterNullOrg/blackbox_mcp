@@ -223,10 +223,146 @@ The server exposes a `blackbox://agent-guide` resource containing detailed instr
 
 | Variable | Description | Default |
 |----------|-------------|---------|
+| `MCP_TRANSPORT` | Transport mode: `stdio` or `http` | `stdio` |
+| `PORT` | HTTP server port (when `MCP_TRANSPORT=http`) | `3001` |
+| `CORS_ORIGIN` | Allowed CORS origin (when `MCP_TRANSPORT=http`) | `*` |
 | `DKG_NODE_1` through `DKG_NODE_5` | Individual DKG node URLs | `http://localhost:8081-8085` |
 | `DKG_NODE_URLS` | Comma-separated node URLs (alternative) | — |
 | `DKG_THRESHOLD` | Minimum shares needed for reconstruction | `3` |
 | `WALLET_STORE_PATH` | Path to encrypted wallet storage | `./wallets` |
+
+## Deployment
+
+The server supports two transport modes:
+
+| Mode | Use Case | How |
+|------|----------|-----|
+| **stdio** (default) | Local MCP clients (Claude Desktop, Cursor, Claude Code) | `node dist/index.js` |
+| **http** | Hosted server for web agents, remote access | `MCP_TRANSPORT=http node dist/index.js` |
+
+### Deploy on EC2 (Docker)
+
+```bash
+# On your EC2 instance
+git clone https://github.com/InterNullOrg/blackbox_mcp.git
+cd blackbox_mcp
+docker compose up -d
+```
+
+The server will be available at `http://<your-ec2-ip>:3001/mcp` with a health check at `/health`.
+
+To use a custom port or restrict CORS:
+
+```bash
+PORT=8080 CORS_ORIGIN=https://yourdomain.com docker compose up -d
+```
+
+### Deploy on EC2 (without Docker)
+
+```bash
+git clone https://github.com/InterNullOrg/blackbox_mcp.git
+cd blackbox_mcp
+npm install
+npm run build
+
+# Run with systemd, pm2, or directly:
+MCP_TRANSPORT=http PORT=3001 \
+  DKG_NODE_1=https://theblackbox.network/node1 \
+  DKG_NODE_2=https://theblackbox.network/node2 \
+  DKG_NODE_3=https://theblackbox.network/node3 \
+  DKG_NODE_4=https://theblackbox.network/node4 \
+  DKG_NODE_5=https://theblackbox.network/node5 \
+  node dist/index.js
+```
+
+With pm2 for process management:
+
+```bash
+npm install -g pm2
+MCP_TRANSPORT=http PORT=3001 pm2 start dist/index.js --name blackbox-mcp
+pm2 save
+pm2 startup  # auto-start on reboot
+```
+
+### Deploy behind Nginx (HTTPS)
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name mcp.yourdomain.com;
+
+    ssl_certificate /etc/letsencrypt/live/mcp.yourdomain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/mcp.yourdomain.com/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:3001;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_read_timeout 300s;
+    }
+}
+```
+
+### HTTP API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/mcp` | POST | MCP Streamable HTTP endpoint (all tool calls go here) |
+| `/mcp` | GET | SSE stream for server-initiated messages |
+| `/mcp` | DELETE | Close session |
+| `/health` | GET | Health check — returns `{"status":"ok","sessions":N}` |
+
+### Connecting Web Agents to Hosted Server
+
+Web-based agents connect via the Streamable HTTP transport:
+
+```typescript
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+
+const transport = new StreamableHTTPClientTransport(
+  new URL('https://mcp.yourdomain.com/mcp')
+);
+
+const client = new Client({ name: 'my-web-agent', version: '1.0.0' });
+await client.connect(transport);
+
+// Now call any of the 18 tools
+const result = await client.callTool('check_health', {});
+```
+
+### NPM Install (for local agents)
+
+```bash
+# Install globally
+npm install -g @anthropic-ai/blackbox-mcp
+
+# Then use in MCP config:
+# "command": "blackbox-mcp"
+```
+
+Or use npx without installing:
+
+```json
+{
+  "mcpServers": {
+    "blackbox": {
+      "command": "npx",
+      "args": ["@anthropic-ai/blackbox-mcp"],
+      "env": {
+        "DKG_NODE_1": "https://theblackbox.network/node1",
+        "DKG_NODE_2": "https://theblackbox.network/node2",
+        "DKG_NODE_3": "https://theblackbox.network/node3",
+        "DKG_NODE_4": "https://theblackbox.network/node4",
+        "DKG_NODE_5": "https://theblackbox.network/node5"
+      }
+    }
+  }
+}
+```
 
 ## How It Works
 
@@ -344,14 +480,16 @@ npx tsx test-idempotency-splits.ts
 ```
 blackbox_mcp/
 ├── src/
-│   ├── index.ts      # MCP server — 18 tools + agent guide resource
-│   ├── api.ts        # BlackBox API client (DKG node communication)
-│   ├── config.ts     # Environment configuration loader
-│   ├── crypto.ts     # Lagrange interpolation, ECDSA signatures, key reconstruction
-│   └── wallet.ts     # Encrypted wallet manager (AES-256-GCM + PBKDF2)
+│   ├── index.ts          # MCP server — 18 tools + agent guide resource (stdio + HTTP)
+│   ├── api.ts            # BlackBox API client (DKG node communication)
+│   ├── config.ts         # Environment configuration loader
+│   ├── crypto.ts         # Lagrange interpolation, ECDSA signatures, key reconstruction
+│   └── wallet.ts         # Encrypted wallet manager (AES-256-GCM + PBKDF2)
+├── Dockerfile            # Docker image for EC2/cloud deployment
+├── docker-compose.yml    # One-command deployment
 ├── package.json
 ├── tsconfig.json
-└── test-*.ts         # Test suites
+└── test-*.ts             # Test suites
 ```
 
 ## License

@@ -1,0 +1,18 @@
+# BlackBox MCP — Agent Index
+
+> Privacy-preserving cross-chain payments via Distributed Key Generation (DKG). Deposit on one chain, withdraw on any chain with no on-chain link.
+
+## Files
+
+- [llms-full.txt](llms-full.txt) — Complete agent reference: all 18 tools with parameters, types, example calls and responses, auth model, install, config, security model, error reference.
+- [mcp.md](mcp.md) — MCP server page: tools overview, install, config JSON, auth. Start here for MCP integration.
+- [api.md](api.md) — Underlying protocol and API: DKG node endpoints, on-chain contracts, data flow. Read this to understand what the MCP tools do internally.
+
+## Quick summary
+
+- **What it is**: An MCP server (stdio transport) that lets AI agents use the BlackBox privacy protocol.
+- **Tools**: 18 tools across wallet management, protocol discovery, deposit, key claiming, withdrawal, relay, and swap.
+- **Auth**: No API keys. Wallet-based ECDSA signatures. Agent wallets stored encrypted (AES-256-GCM + PBKDF2).
+- **Install**: `git clone`, `npm install`, `npm run build`, add to MCP config with 5 DKG node URLs.
+- **Chains**: Sepolia, Base Sepolia, BNB Testnet, Polygon Amoy, Hyperliquid Testnet, Solana Devnet.
+- **Source**: https://github.com/InterNullOrg/blackbox_mcp

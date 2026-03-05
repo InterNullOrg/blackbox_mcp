@@ -1,0 +1,796 @@
+# BlackBox MCP — Complete Agent Reference
+
+Source: https://github.com/InterNullOrg/blackbox_mcp
+
+---
+
+## What is BlackBox?
+
+BlackBox is a privacy-preserving, cross-chain payment protocol built on distributed threshold cryptography (Distributed Key Generation, or DKG). It breaks the on-chain link between a deposit and a withdrawal:
+
+1. You deposit tokens into an on-chain treasury contract.
+2. Five DKG nodes each hold a keyshare. Any 3-of-5 can reconstruct a one-time private key.
+3. You use that private key to withdraw funds — on the same chain or a different chain.
+
+No single node ever knows the full private key. The agent reconstructs it locally via Lagrange interpolation over secp256k1.
+
+This MCP server is the only interface to the BlackBox protocol. There is no separate REST API exposed to end users.
+
+---
+
+## Architecture
+
+```
+AI Agent (Claude, Cursor, Windsurf, custom)
+    |
+    | MCP Protocol (stdio)
+    |
+BlackBox MCP Server (Node.js)
+    |
+    |--- DKG Node 1 (theblackbox.network/node1)
+    |--- DKG Node 2 (theblackbox.network/node2)
+    |--- DKG Node 3 (theblackbox.network/node3)   <- 3-of-5 threshold
+    |--- DKG Node 4 (theblackbox.network/node4)
+    |--- DKG Node 5 (theblackbox.network/node5)
+    |
+    |--- EVM Chains (Sepolia, Base Sepolia, BNB Testnet, Polygon Amoy, Hyperliquid)
+    |--- Solana (Devnet)
+```
+
+Transport: stdio (standard MCP).
+
+---
+
+## Supported Chains and Denominations
+
+50 registered merkle roots across 7 chains, 4 tokens, 14 chain+token combinations.
+
+| Chain              | Token | Denominations                    |
+|--------------------|-------|----------------------------------|
+| Sepolia            | ETH   | 0.001, 0.01, 0.05, 0.1, 0.5, 1  |
+| Sepolia            | USDC  | 1, 2, 5, 10                      |
+| Sepolia            | LINK  | 0.5, 1, 2                        |
+| Base Sepolia       | ETH   | 0.001, 0.01, 0.05, 0.1           |
+| Base Sepolia       | USDC  | 1, 2, 5                          |
+| BNB Testnet        | TBNB  | 0.01, 0.05, 0.1, 0.5             |
+| BNB Testnet        | USDC  | 1, 2, 5                          |
+| BNB Testnet        | LINK  | 0.5, 1, 2                        |
+| Polygon Amoy       | POL   | 1, 2                             |
+| Polygon Amoy       | USDC  | 1, 2, 5                          |
+| Hyperliquid Testnet| HYPE  | 0.01, 0.1, 0.5                   |
+| Hyperliquid Testnet| USDC  | 1, 2, 5                          |
+| Solana Devnet      | SOL   | 0.1, 0.5, 1                      |
+| Solana Devnet      | USDC  | 1, 2, 5                          |
+
+IMPORTANT: Always call `get_available_denominations` to get current live data — new denominations are added regularly.
+
+IMPORTANT: BNB Testnet USDC uses 18 decimals (not 6). Always call `get_chain_tokens` to check decimals before depositing.
+
+---
+
+## Install
+
+```bash
+git clone https://github.com/InterNullOrg/blackbox_mcp.git
+cd blackbox_mcp
+npm install
+npm run build
+```
+
+---
+
+## Configuration
+
+The server is configured entirely via environment variables. No credentials or API keys are required beyond the DKG node URLs.
+
+### Environment Variables
+
+| Variable             | Description                                              | Default                        |
+|----------------------|----------------------------------------------------------|--------------------------------|
+| `DKG_NODE_1`         | URL for DKG node 1                                       | `http://localhost:8081`        |
+| `DKG_NODE_2`         | URL for DKG node 2                                       | `http://localhost:8082`        |
+| `DKG_NODE_3`         | URL for DKG node 3                                       | `http://localhost:8083`        |
+| `DKG_NODE_4`         | URL for DKG node 4                                       | `http://localhost:8084`        |
+| `DKG_NODE_5`         | URL for DKG node 5                                       | `http://localhost:8085`        |
+| `DKG_NODE_URLS`      | Comma-separated node URLs (alternative to individual vars) | —                            |
+| `DKG_THRESHOLD`      | Minimum shares needed for key reconstruction             | `3`                            |
+| `WALLET_STORE_PATH`  | Path to encrypted wallet storage directory               | `./wallets`                    |
+
+### MCP Config JSON (Claude Desktop / Claude Code / Cursor)
+
+```json
+{
+  "mcpServers": {
+    "blackbox": {
+      "command": "node",
+      "args": ["/absolute/path/to/blackbox_mcp/dist/index.js"],
+      "env": {
+        "DKG_NODE_1": "https://theblackbox.network/node1",
+        "DKG_NODE_2": "https://theblackbox.network/node2",
+        "DKG_NODE_3": "https://theblackbox.network/node3",
+        "DKG_NODE_4": "https://theblackbox.network/node4",
+        "DKG_NODE_5": "https://theblackbox.network/node5"
+      }
+    }
+  }
+}
+```
+
+Config file locations:
+- Claude Desktop (macOS): `~/Library/Application Support/Claude/claude_desktop_config.json`
+- Claude Desktop (Windows): `%APPDATA%\Claude\claude_desktop_config.json`
+- Claude Code: `.mcp.json` in project root or `~/.claude/settings.json`
+- Cursor: `.cursor/mcp.json` in project root
+
+---
+
+## Auth Model
+
+There is no API key or OAuth token required to run the server. Authentication is handled at the protocol level:
+
+- **Wallet-based auth**: Each key claim request is signed by the depositor's ECDSA wallet. The DKG nodes independently verify on-chain that the deposit was made by the requesting address.
+- **Timestamp validation**: Requests must carry a fresh Unix timestamp (within ~5 minutes). Stale requests are rejected.
+- **Wallet encryption**: Agent wallets are stored locally encrypted with AES-256-GCM and PBKDF2 (100,000 iterations). A password is required to unlock them per tool call.
+- **No shared secret**: Node communication uses standard HTTPS. No bearer tokens or API keys.
+
+---
+
+## MCP Resource
+
+The server exposes one resource:
+
+**URI**: `blackbox://agent-guide`
+**MIME type**: `text/plain`
+**Description**: Detailed workflow guide for agents — step-by-step instructions, denomination rules, security model, error handling. MCP-compatible clients read this automatically on connection.
+
+---
+
+## Tools (18 total)
+
+### Wallet Management
+
+---
+
+#### `create_wallet`
+
+Create a new wallet with a securely generated random key. Supports EVM and Solana. The private key is shown once and then stored encrypted.
+
+**Parameters:**
+
+| Name          | Type   | Required | Description                                      |
+|---------------|--------|----------|--------------------------------------------------|
+| `name`        | string | yes      | Name for the wallet (e.g., "trading-agent")      |
+| `password`    | string | yes      | Password to encrypt the stored private key       |
+| `wallet_type` | string | no       | `"evm"` (default) or `"solana"`                  |
+
+**Example call:**
+```json
+{
+  "name": "create_wallet",
+  "arguments": {
+    "name": "my-agent-wallet",
+    "password": "s3cr3t",
+    "wallet_type": "evm"
+  }
+}
+```
+
+**Example response:**
+```json
+{
+  "success": true,
+  "name": "my-agent-wallet",
+  "wallet_type": "evm",
+  "address": "0xAbCd1234...",
+  "private_key": "0xdeadbeef...",
+  "warning": "Save this private key securely. It will not be shown again. The encrypted copy is stored locally."
+}
+```
+
+---
+
+#### `import_wallet`
+
+Import an existing EVM wallet from a private key.
+
+**Parameters:**
+
+| Name          | Type   | Required | Description                                      |
+|---------------|--------|----------|--------------------------------------------------|
+| `name`        | string | yes      | Name for the wallet                              |
+| `private_key` | string | yes      | Private key (hex, with or without 0x prefix)     |
+| `password`    | string | yes      | Password to encrypt the stored key               |
+
+**Example call:**
+```json
+{
+  "name": "import_wallet",
+  "arguments": {
+    "name": "imported-wallet",
+    "private_key": "0xabc123...",
+    "password": "mypassword"
+  }
+}
+```
+
+**Example response:**
+```json
+{
+  "success": true,
+  "name": "imported-wallet",
+  "address": "0xAbCd1234..."
+}
+```
+
+---
+
+#### `list_wallets`
+
+List all stored wallets (names and addresses). No parameters required.
+
+**Example response:**
+```json
+{
+  "wallets": [
+    { "name": "my-agent-wallet", "address": "0xAbCd1234..." }
+  ]
+}
+```
+
+---
+
+#### `get_balance`
+
+Get native and/or token balance for a wallet on a specific chain.
+
+**Parameters:**
+
+| Name            | Type   | Required | Description                                               |
+|-----------------|--------|----------|-----------------------------------------------------------|
+| `wallet_name`   | string | yes      | Wallet name                                               |
+| `password`      | string | yes      | Wallet password                                           |
+| `chain_name`    | string | yes      | Chain name (e.g., `"sepolia"`, `"polygon-amoy"`)          |
+| `token_address` | string | no       | ERC20 token contract address. Omit for native balance only |
+
+**Example call:**
+```json
+{
+  "name": "get_balance",
+  "arguments": {
+    "wallet_name": "my-agent-wallet",
+    "password": "s3cr3t",
+    "chain_name": "sepolia"
+  }
+}
+```
+
+**Example response:**
+```json
+{
+  "address": "0xAbCd1234...",
+  "chain": "sepolia",
+  "native_balance": "0.05",
+  "native_currency": "ETH"
+}
+```
+
+---
+
+### Protocol Discovery
+
+---
+
+#### `get_supported_chains`
+
+Get all chains supported by the BlackBox protocol, including RPC URLs, treasury addresses, chain IDs, and supported tokens. No parameters required.
+
+**Example response:**
+```json
+{
+  "chains": [
+    {
+      "chain_name": "sepolia",
+      "chain_id": 11155111,
+      "chain_type": "evm",
+      "rpc_url": "https://rpc.sepolia.org",
+      "treasury_address": "0x...",
+      "block_explorer": "https://sepolia.etherscan.io",
+      "native_currency": "ETH",
+      "supported_tokens": ["USDC", "LINK"]
+    }
+  ]
+}
+```
+
+---
+
+#### `get_chain_tokens`
+
+Get tokens configured for a specific chain, including contract addresses and decimals.
+
+**Parameters:**
+
+| Name    | Type   | Required | Description                                    |
+|---------|--------|----------|------------------------------------------------|
+| `chain` | string | yes      | Chain name (e.g., `"sepolia"`, `"base_sepolia"`) |
+
+**Example response:**
+```json
+{
+  "chain": "sepolia",
+  "tokens": [
+    {
+      "symbol": "USDC",
+      "address": "0xUSDC...",
+      "decimals": 6
+    }
+  ]
+}
+```
+
+---
+
+#### `get_available_denominations`
+
+Get available denominations (exact deposit amounts) for a chain. Each denomination corresponds to a merkle root registered on-chain. Deposit amounts MUST exactly match one of these values.
+
+**Parameters:**
+
+| Name    | Type   | Required | Description                              |
+|---------|--------|----------|------------------------------------------|
+| `chain` | string | no       | Chain name to filter. Omit for all chains |
+
+**Example response:**
+```json
+{
+  "denominations": [
+    {
+      "denomination": "0.001",
+      "merkle_root_id_on_chain": 0,
+      "token_symbol": "ETH",
+      "chain_name": "sepolia"
+    },
+    {
+      "denomination": "1",
+      "merkle_root_id_on_chain": 6,
+      "token_symbol": "USDC",
+      "chain_name": "sepolia"
+    }
+  ]
+}
+```
+
+---
+
+#### `get_token_mappings`
+
+Get cross-chain token mapping rules showing which tokens can be moved between which chains. Returns an object keyed by token symbol. No parameters required.
+
+**Example response:**
+```json
+{
+  "ETH": {
+    "sepolia:base_sepolia": {
+      "source_token": "ETH",
+      "target_token": "ETH",
+      "rate": "1"
+    }
+  }
+}
+```
+
+---
+
+#### `check_health`
+
+Check health and status of the BlackBox DKG network. No parameters required.
+
+**Example response:**
+```json
+{
+  "status": "ok",
+  "nodes_online": 5,
+  "threshold": 3
+}
+```
+
+---
+
+#### `get_leaderboard`
+
+Get the depositor leaderboard showing top depositors with their stats.
+
+**Parameters:**
+
+| Name    | Type   | Required | Description                             |
+|---------|--------|----------|-----------------------------------------|
+| `limit` | number | no       | Max entries to return (default: 100)    |
+
+---
+
+### Core Operations
+
+---
+
+#### `deposit`
+
+Deposit funds into the BlackBox treasury contract. Handles ERC20 approval automatically. Returns the deposit transaction hash needed for `claim_keys`.
+
+**Parameters:**
+
+| Name          | Type   | Required | Description                                                                                 |
+|---------------|--------|----------|---------------------------------------------------------------------------------------------|
+| `wallet_name` | string | yes      | Wallet name to deposit from                                                                 |
+| `password`    | string | yes      | Wallet password                                                                             |
+| `chain_name`  | string | yes      | Chain to deposit on (e.g., `"sepolia"`, `"base_sepolia"`)                                   |
+| `amount`      | string | yes      | Amount to deposit (human-readable, e.g., `"1"`). Must exactly match a registered denomination |
+| `token`       | string | no       | Token symbol (e.g., `"USDC"`, `"ETH"`) or ERC20 contract address. Omit for native token.   |
+
+**Example call:**
+```json
+{
+  "name": "deposit",
+  "arguments": {
+    "wallet_name": "my-agent-wallet",
+    "password": "s3cr3t",
+    "chain_name": "sepolia",
+    "amount": "1",
+    "token": "USDC"
+  }
+}
+```
+
+**Example response:**
+```json
+{
+  "success": true,
+  "tx_hash": "0xabc123...",
+  "chain": "sepolia",
+  "amount": "1",
+  "token_symbol": "USDC",
+  "token_address": "0xUSDC...",
+  "token_decimals": 6,
+  "block_number": 7654321,
+  "explorer_url": "https://sepolia.etherscan.io/tx/0xabc123..."
+}
+```
+
+---
+
+#### `claim_keys`
+
+Request keyshares from all DKG nodes and reconstruct withdrawal private keys via Lagrange interpolation. The wallet must be the same address that made the deposit. Returns reconstructed private keys with all data needed for withdrawal.
+
+**Parameters:**
+
+| Name                  | Type    | Required | Description                                                               |
+|-----------------------|---------|----------|---------------------------------------------------------------------------|
+| `wallet_name`         | string  | yes      | Wallet name (must match the depositor address)                            |
+| `password`            | string  | yes      | Wallet password                                                           |
+| `deposit_tx_hash`     | string  | yes      | Transaction hash of the deposit                                           |
+| `source_chain`        | string  | yes      | Chain where the deposit was made                                          |
+| `withdrawal_requests` | array   | yes      | Array of withdrawal request objects (see below)                           |
+| `occurrence_offset`   | number  | no       | Number of keys already claimed for this deposit. Use for partial claims (default: 0) |
+
+Each object in `withdrawal_requests`:
+
+| Field          | Type   | Description                                      |
+|----------------|--------|--------------------------------------------------|
+| `target_chain` | string | Chain to withdraw on (can differ from source)    |
+| `token_symbol` | string | Token symbol (must match what was deposited)     |
+| `denomination` | string | Exact denomination amount (e.g., `"1"`, `"0.1"`) |
+
+**Constraints:**
+- Total of all denominations must not exceed the deposit amount.
+- Denominations must match exactly what is registered (use `get_available_denominations`).
+- Token symbol must match what was deposited — you cannot deposit USDC and claim ETH.
+- Re-claiming the same deposit returns identical keys (idempotent).
+
+**Example call:**
+```json
+{
+  "name": "claim_keys",
+  "arguments": {
+    "wallet_name": "my-agent-wallet",
+    "password": "s3cr3t",
+    "deposit_tx_hash": "0xabc123...",
+    "source_chain": "sepolia",
+    "withdrawal_requests": [
+      { "target_chain": "base_sepolia", "token_symbol": "USDC", "denomination": "1" }
+    ]
+  }
+}
+```
+
+**Example response:**
+```json
+{
+  "success": true,
+  "keys_count": 1,
+  "keys": [
+    {
+      "index": 0,
+      "private_key": "0xdeadbeef...",
+      "address": "0xKeyAddr...",
+      "key_index": 42,
+      "merkle_root_id": 6,
+      "merkle_proof": ["0xproof1...", "0xproof2..."],
+      "denomination": "1",
+      "chain_name": "base_sepolia",
+      "chain_id": 84532,
+      "treasury_address": "0xTreasury...",
+      "token_symbol": "USDC",
+      "token_address": "0xUSDC...",
+      "token_decimals": 6
+    }
+  ],
+  "deposit_amount": 1,
+  "claimed_amount": 1,
+  "remaining_deposit": 0,
+  "nodes_responded": 5,
+  "warning": "These private keys are one-time-use withdrawal keys. Each can only be used once on-chain."
+}
+```
+
+---
+
+#### `withdraw_onchain`
+
+Execute an on-chain withdrawal using a one-time key from `claim_keys`. Signs with the one-time key and submits to the treasury contract. The agent's wallet pays gas.
+
+**Parameters:**
+
+| Name              | Type     | Required | Description                                              |
+|-------------------|----------|----------|----------------------------------------------------------|
+| `wallet_name`     | string   | yes      | Wallet name to pay gas from                              |
+| `password`        | string   | yes      | Wallet password                                          |
+| `recipient`       | string   | yes      | Address to receive the withdrawn funds                   |
+| `withdrawal_key`  | string   | yes      | `private_key` from `claim_keys` result                   |
+| `token_address`   | string   | yes      | `token_address` from `claim_keys` result                 |
+| `amount`          | string   | yes      | `denomination` from `claim_keys` result (human-readable) |
+| `token_decimals`  | number   | yes      | `token_decimals` from `claim_keys` result                |
+| `merkle_root_id`  | number   | yes      | `merkle_root_id` from `claim_keys` result                |
+| `merkle_proof`    | string[] | yes      | `merkle_proof` from `claim_keys` result                  |
+| `key_index`       | number   | yes      | `key_index` from `claim_keys` result                     |
+| `chain_name`      | string   | yes      | `chain_name` from `claim_keys` result                    |
+| `treasury_address`| string   | yes      | `treasury_address` from `claim_keys` result              |
+
+**Example call:**
+```json
+{
+  "name": "withdraw_onchain",
+  "arguments": {
+    "wallet_name": "my-agent-wallet",
+    "password": "s3cr3t",
+    "recipient": "0xRecipient...",
+    "withdrawal_key": "0xdeadbeef...",
+    "token_address": "0xUSDC...",
+    "amount": "1",
+    "token_decimals": 6,
+    "merkle_root_id": 6,
+    "merkle_proof": ["0xproof1..."],
+    "key_index": 42,
+    "chain_name": "base_sepolia",
+    "treasury_address": "0xTreasury..."
+  }
+}
+```
+
+**Example response:**
+```json
+{
+  "success": true,
+  "tx_hash": "0xwithdrawal...",
+  "block_number": 1234567,
+  "chain": "base_sepolia",
+  "recipient": "0xRecipient...",
+  "amount": "1",
+  "explorer_url": "https://sepolia.basescan.org/tx/0xwithdrawal..."
+}
+```
+
+---
+
+#### `deposit_and_claim`
+
+Combined operation: deposits funds into the treasury and then immediately claims withdrawal keys. Internally waits for block confirmations before claiming. Equivalent to calling `deposit` then `claim_keys`.
+
+**Parameters:**
+
+| Name                  | Type   | Required | Description                                             |
+|-----------------------|--------|----------|---------------------------------------------------------|
+| `wallet_name`         | string | yes      | Wallet name                                             |
+| `password`            | string | yes      | Wallet password                                         |
+| `chain_name`          | string | yes      | Chain to deposit on                                     |
+| `amount`              | string | yes      | Amount to deposit (must match a registered denomination) |
+| `token`               | string | no       | Token symbol or ERC20 address. Omit for native token.   |
+| `withdrawal_requests` | array  | yes      | Same format as `claim_keys`. Total must equal deposit.  |
+
+**Example response:**
+```json
+{
+  "success": true,
+  "deposit_tx_hash": "0xdeposit...",
+  "keys_count": 1,
+  "keys": [...],
+  "remaining_deposit": 0,
+  "explorer_url": "https://sepolia.etherscan.io/tx/0xdeposit..."
+}
+```
+
+---
+
+### Relay and Swap
+
+---
+
+#### `relay_withdraw`
+
+Submit a gas-free withdrawal via the relay service. The relayer submits the on-chain transaction and takes a fee. Use when the agent wallet has no gas on the target chain.
+
+**Parameters:**
+
+| Name              | Type     | Required | Description                                                                               |
+|-------------------|----------|----------|-------------------------------------------------------------------------------------------|
+| `withdrawal_key`  | string   | yes      | `private_key` from `claim_keys` result                                                    |
+| `recipient`       | string   | yes      | Address to receive funds                                                                  |
+| `token_address`   | string   | yes      | Token contract address from `claim_keys` result                                           |
+| `amount`          | string   | yes      | Amount in base units (wei/lamports), not human-readable                                   |
+| `token_decimals`  | number   | yes      | Token decimals from `claim_keys` result                                                   |
+| `merkle_root_id`  | number   | yes      | Merkle root ID from `claim_keys` result                                                   |
+| `merkle_proof`    | string[] | yes      | Merkle proof from `claim_keys` result                                                     |
+| `key_index`       | number   | yes      | Key index from `claim_keys` result                                                        |
+| `chain_name`      | string   | yes      | Chain name from `claim_keys` result                                                       |
+| `chain_type`      | string   | no       | `"evm"` (default) or `"solana"`                                                           |
+| `max_relayer_fee` | string   | no       | Max fee in base units (must be > 0). Defaults to 10% of amount. Setting to 0 will fail.  |
+
+**Example response:**
+```json
+{
+  "success": true,
+  "job_id": "relay-job-uuid",
+  "message": "Relay withdrawal submitted. Use check_relay_status to track progress."
+}
+```
+
+---
+
+#### `check_relay_status`
+
+Check the status of a relay withdrawal job.
+
+**Parameters:**
+
+| Name     | Type   | Required | Description                          |
+|----------|--------|----------|--------------------------------------|
+| `job_id` | string | yes      | Job ID from `relay_withdraw` result  |
+
+**Example response:**
+```json
+{
+  "job_id": "relay-job-uuid",
+  "status": "confirmed",
+  "tx_hash": "0xrelaytx..."
+}
+```
+
+---
+
+#### `get_relay_info`
+
+Get relay service info including supported chains, fees, and whether the relayer is enabled. No parameters required.
+
+**Example response:**
+```json
+{
+  "info": {
+    "enabled": true,
+    "evm_relayer_address": "0xRelayer...",
+    "supported_chains": ["sepolia", "base_sepolia"]
+  }
+}
+```
+
+---
+
+#### `get_swap_quote`
+
+Get a cross-chain swap quote from the relay service.
+
+**Parameters:**
+
+| Name        | Type   | Required | Description                                             |
+|-------------|--------|----------|---------------------------------------------------------|
+| `asset_in`  | string | yes      | Input asset identifier (e.g., `"USDC_sepolia"`)         |
+| `asset_out` | string | yes      | Output asset identifier (e.g., `"USDC_base_sepolia"`)   |
+| `amount`    | string | yes      | Exact input amount in base units (e.g., `"1000000"` for 1 USDC) |
+| `swap_type` | string | no       | `"EXACT_IN"` (default) or `"EXACT_OUT"`                 |
+
+---
+
+## Security Model
+
+| Property               | Implementation                                                        |
+|------------------------|-----------------------------------------------------------------------|
+| No single point of failure | 3-of-5 threshold — any 3 nodes reconstruct, no 2 nodes can       |
+| One-time keys          | On-chain nullifier prevents reuse — double-spend reverts              |
+| Wallet encryption      | AES-256-GCM with PBKDF2 (100,000 iterations)                         |
+| Request authentication | ECDSA signature on every keyshare request, verified by each node     |
+| Deposit verification   | Each DKG node independently verifies deposit on-chain                |
+| Idempotent claims      | Re-requesting same deposit returns identical keys                    |
+| UTXO model             | Deposit fully allocated on first claim; different configs rejected    |
+| Timestamp validation   | Requests must be within ~5 minutes                                   |
+| Cross-chain linking    | Deposit chain and withdrawal chain are never linked on-chain          |
+
+---
+
+## Typical Agent Workflows
+
+### Privacy Payment (cross-chain)
+
+```
+1. create_wallet             # agent wallet
+2. (user funds wallet)
+3. get_available_denominations  # confirm valid amounts
+4. deposit                   # e.g., 1 USDC on Sepolia
+5. claim_keys                # target: base_sepolia, USDC, "1"
+6. withdraw_onchain          # sends to recipient on Base Sepolia
+   (deposit chain != withdrawal chain = no on-chain link)
+```
+
+### Batch Payments
+
+```
+1. deposit                   # e.g., 0.1 ETH on Sepolia
+2. claim_keys                # 100 requests of 0.001 ETH each, across multiple chains
+3. withdraw_onchain (x100)   # each withdrawal to a different recipient/chain
+```
+
+### Gas-Free Withdrawal
+
+```
+1. claim_keys                # get keys
+2. get_relay_info            # confirm relay is enabled
+3. relay_withdraw            # relayer pays gas, takes fee
+4. check_relay_status        # poll until confirmed
+```
+
+---
+
+## Error Reference
+
+| Error message                                         | Cause and fix                                                                 |
+|-------------------------------------------------------|-------------------------------------------------------------------------------|
+| `No merkle root found`                                | Invalid denomination. Call `get_available_denominations` for valid values.    |
+| `Total requested value exceeds deposit amount`        | Claim amount > deposit amount. Reduce withdrawal_requests total.              |
+| `Deposit transaction was not sent by the requesting user` | Wrong wallet. Must use the same address that made the deposit.            |
+| `Request timestamp is too old`                        | Stale request. Retry immediately.                                             |
+| `No token mapping found`                              | Token mismatch — deposited USDC but tried to claim ETH (or vice versa).      |
+| `insufficient peer evaluations`                       | DKG P2P exchange failed. Some nodes may be unreachable. Retry.               |
+| `relay service is disabled`                           | Use `withdraw_onchain` instead.                                               |
+| `MaxRelayerFeeExceeded`                               | Increase `max_relayer_fee`.                                                   |
+| Key claim: `only N/3 nodes responded`                 | Less than 3 nodes returned shares. Network issue. Retry.                     |
+| Withdrawal reverts                                    | Key may already be spent (nullifier). Each key works once only.              |
+
+---
+
+## Project Structure
+
+```
+blackbox_mcp/
+├── src/
+│   ├── index.ts      # MCP server — 18 tools + agent guide resource
+│   ├── api.ts        # BlackBox API client (DKG node communication)
+│   ├── config.ts     # Environment configuration loader
+│   ├── crypto.ts     # Lagrange interpolation, ECDSA signatures, key reconstruction
+│   └── wallet.ts     # Encrypted wallet manager (AES-256-GCM + PBKDF2)
+├── package.json
+├── tsconfig.json
+└── test-*.ts         # Test suites
+```
+
+---
+
+## Repository
+
+https://github.com/InterNullOrg/blackbox_mcp

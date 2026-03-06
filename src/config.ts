@@ -18,16 +18,16 @@ export function loadConfig(): BlackBoxConfig {
     nodeUrls.push(...process.env.DKG_NODE_URLS.split(',').map(u => u.trim()));
   }
 
-  // Default: 5 local nodes
+  // Default: production DKG nodes
   if (nodeUrls.length === 0) {
     for (let i = 1; i <= 5; i++) {
-      nodeUrls.push(`http://localhost:${8080 + i}`);
+      nodeUrls.push(`https://theblackbox.network/node${i}`);
     }
   }
 
   return {
     nodeUrls,
     threshold: parseInt(process.env.DKG_THRESHOLD || '3'),
-    walletStorePath: process.env.WALLET_STORE_PATH || './wallets',
+    walletStorePath: process.env.WALLET_STORE_PATH || `${process.env.HOME || process.env.USERPROFILE || '.'}/.blackbox-mcp/wallets`,
   };
 }

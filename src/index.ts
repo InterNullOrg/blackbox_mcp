@@ -1106,6 +1106,13 @@ async function main() {
         return;
       }
 
+      // Only POST can initialize a new session
+      if (req.method !== 'POST') {
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use POST to initialize a session.' }));
+        return;
+      }
+
       // New session
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => crypto.randomUUID(),

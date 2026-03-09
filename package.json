@@ -1,6 +1,6 @@
 {
   "name": "blackbox-mcp",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "MCP server for AI agents to interact with the BlackBox privacy protocol — deposit, claim keys, withdraw across chains via 3-of-5 distributed threshold cryptography",
   "type": "module",
   "main": "dist/index.js",

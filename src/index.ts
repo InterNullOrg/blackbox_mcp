@@ -293,11 +293,51 @@ server.tool(
   },
   async ({ wallet_name, password, chain_name, token_address }) => {
     try {
+      const wallet = walletManager.getWallet(wallet_name);
+      if (!wallet) return { content: [{ type: 'text', text: `Wallet "${wallet_name}" not found` }], isError: true };
+
       const chains = await api.getChains();
       const chain = chains.find(c => c.chain_name === chain_name);
       if (!chain) return { content: [{ type: 'text', text: `Chain "${chain_name}" not found` }], isError: true };
       if (!chain.rpc_url) return { content: [{ type: 'text', text: `No RPC URL configured for ${chain_name}` }], isError: true };
 
+      // Solana balance check
+      if (chain.chain_type === 'solana' || wallet.walletType === 'solana') {
+        const { Connection, PublicKey, LAMPORTS_PER_SOL } = await import('@solana/web3.js');
+        const connection = new Connection(chain.rpc_url, 'confirmed');
+        const pubkey = new PublicKey(wallet.address);
+        const lamports = await connection.getBalance(pubkey);
+
+        const result: any = {
+          address: wallet.address,
+          chain: chain_name,
+          native_balance: (lamports / LAMPORTS_PER_SOL).toString(),
+          native_currency: chain.native_currency || 'SOL',
+        };
+
+        // SPL token balance
+        if (token_address) {
+          try {
+            const tokenPubkey = new PublicKey(token_address);
+            const tokenAccounts = await connection.getParsedTokenAccountsByOwner(pubkey, { mint: tokenPubkey });
+            if (tokenAccounts.value.length > 0) {
+              const parsed = tokenAccounts.value[0].account.data.parsed.info;
+              result.token_balance = parsed.tokenAmount.uiAmountString;
+              result.token_symbol = token_address;
+              result.token_address = token_address;
+            } else {
+              result.token_balance = '0';
+              result.token_address = token_address;
+            }
+          } catch (tokenErr: any) {
+            result.token_error = `Failed to fetch SPL token: ${tokenErr.message}`;
+          }
+        }
+
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      }
+
+      // EVM balance check
       const provider = new ethers.providers.JsonRpcProvider(chain.rpc_url);
       const signer = walletManager.getSigner(wallet_name, password, provider);
       const address = await signer.getAddress();
@@ -338,7 +378,23 @@ server.tool(
   async () => {
     try {
       const chains = await api.getChains();
-      return { content: [{ type: 'text', text: JSON.stringify({ chains }, null, 2) }] };
+
+      // Enrich each chain with its token details from the tokens endpoint
+      const enriched = await Promise.all(chains.map(async (chain) => {
+        try {
+          const tokens = await api.getTokens(chain.chain_name);
+          const tokenList = (tokens || []).map((t: any) => ({
+            symbol: t.Symbol || t.symbol,
+            address: t.Address || t.address,
+            decimals: t.Decimals || t.decimals,
+          }));
+          return { ...chain, supported_tokens: tokenList };
+        } catch {
+          return chain; // If token fetch fails, return chain as-is
+        }
+      }));
+
+      return { content: [{ type: 'text', text: JSON.stringify({ chains: enriched }, null, 2) }] };
     } catch (e: any) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }

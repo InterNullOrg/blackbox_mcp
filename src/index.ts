@@ -5,20 +5,71 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
 import { ethers } from 'ethers';
+import bs58 from 'bs58';
 import { loadConfig } from './config.js';
 import { WalletManager } from './wallet.js';
 import { BlackBoxAPI } from './api.js';
 import {
   reconstructPrivateKey,
   verifyKeyMatchesAddress,
+  verifySolanaKeyMatchesAddress,
+  isSolanaAddress,
+  secp256k1ToEd25519Seed,
+  getSolanaPrivateKeyFromSecp256k1,
   createProofMessage,
   createWithdrawalSignature,
   createRelayWithdrawalSignature,
+  createSolanaWithdrawalSignature,
+  createSolanaRelaySignature,
 } from './crypto.js';
 
 const config = loadConfig();
 const walletManager = new WalletManager(config.walletStorePath);
 const api = new BlackBoxAPI(config);
+
+// Per-chain minimum gas price floors matching the relayer's per-chain config.
+// Polygon requires >= 30 gwei; BNB >= 3 gwei; others are cheap (1 gwei).
+const POLYGON_CHAIN_IDS = new Set([137, 80001, 80002]);
+const BNB_CHAIN_IDS = new Set([56, 97]);
+const RELAY_GAS_ESTIMATE = 250000;
+
+function getMinGasPrice(chainId: number): ethers.BigNumber {
+  if (POLYGON_CHAIN_IDS.has(chainId)) return ethers.utils.parseUnits('30', 'gwei');
+  if (BNB_CHAIN_IDS.has(chainId)) return ethers.utils.parseUnits('3', 'gwei');
+  return ethers.utils.parseUnits('1', 'gwei');
+}
+
+async function getChainGasOverrides(provider: ethers.providers.JsonRpcProvider, chainId: number): Promise<any> {
+  const gasOverrides: any = { gasLimit: 300000 };
+  if (POLYGON_CHAIN_IDS.has(chainId) || BNB_CHAIN_IDS.has(chainId)) {
+    const minTip = getMinGasPrice(chainId);
+    const feeData = await provider.getFeeData();
+    gasOverrides.maxPriorityFeePerGas = minTip;
+    gasOverrides.maxFeePerGas = feeData.maxFeePerGas?.gt(minTip) ? feeData.maxFeePerGas : minTip.mul(2);
+  }
+  return gasOverrides;
+}
+
+/**
+ * Estimate a realistic maxRelayerFee based on per-chain gas price floors.
+ * For native ETH: protocol fee (0.5%) + gas reimbursement (250k gas × chain min gas price × 1.5 buffer)
+ * For ERC20: protocol fee only (gas reimbursed in ETH separately)
+ */
+function estimateMaxRelayerFee(amount: ethers.BigNumber, chainId: number, isNative: boolean, protocolFeeBps = 50): ethers.BigNumber {
+  const protocolFee = amount.mul(protocolFeeBps).div(10000);
+
+  if (isNative) {
+    const minGasPrice = getMinGasPrice(chainId);
+    const gasReimbursement = ethers.BigNumber.from(RELAY_GAS_ESTIMATE).mul(minGasPrice);
+    // Add 50% buffer on top of gas + protocol fee
+    return protocolFee.add(gasReimbursement).mul(150).div(100);
+  } else {
+    // ERC20: just protocol fee with 20% buffer
+    // Ensure minimum of 1 unit to avoid "fee must be > 0" rejection
+    const fee = protocolFee.mul(120).div(100);
+    return fee.gt(0) ? fee : ethers.BigNumber.from(1);
+  }
+}
 
 const TREASURY_ABI = [
   'function deposit(address token, uint256 amount) payable',
@@ -69,14 +120,52 @@ async function processKeyshares(
       if (ks.keyIndex !== expectedKeyIndex) throw new Error(`Nodes returned different key indices for key ${wrIdx}`);
     }
 
-    const { privateKeyHex } = reconstructPrivateKey(keyshareData, threshold);
-    if (!verifyKeyMatchesAddress(privateKeyHex, expectedAddress)) {
-      throw new Error(`Key reconstruction failed for withdrawal ${wrIdx}: address mismatch`);
+    const isSolana = isSolanaAddress(expectedAddress);
+    let finalPrivateKeyHex: string;
+
+    if (isSolana) {
+      // Solana: reconstruct secp256k1 key, convert to Ed25519, try all share combinations
+      const result = await (async () => {
+        // Try default first-N shares
+        const { privateKeyHex: pkHex } = reconstructPrivateKey(keyshareData, threshold);
+        if (await verifySolanaKeyMatchesAddress(pkHex, expectedAddress)) {
+          const seed = await secp256k1ToEd25519Seed(pkHex);
+          return getSolanaPrivateKeyFromSecp256k1(seed);
+        }
+        // Try all C(N, threshold) combinations
+        for (let a = 0; a < keyshareData.length; a++) {
+          for (let b = a + 1; b < keyshareData.length; b++) {
+            for (let c = b + 1; c < keyshareData.length; c++) {
+              if (a === 0 && b === 1 && c === 2) continue;
+              const subset = [keyshareData[a], keyshareData[b], keyshareData[c]];
+              try {
+                const { privateKeyHex: altPk } = reconstructPrivateKey(subset, threshold);
+                if (await verifySolanaKeyMatchesAddress(altPk, expectedAddress)) {
+                  const seed = await secp256k1ToEd25519Seed(altPk);
+                  return getSolanaPrivateKeyFromSecp256k1(seed);
+                }
+              } catch { /* skip invalid combination */ }
+            }
+          }
+        }
+        return null;
+      })();
+      if (!result) {
+        throw new Error(`Key reconstruction failed for withdrawal ${wrIdx}: no share combination produces expected Solana address ${expectedAddress}`);
+      }
+      finalPrivateKeyHex = result;
+    } else {
+      // EVM: standard secp256k1 verification
+      const { privateKeyHex: pkHex } = reconstructPrivateKey(keyshareData, threshold);
+      if (!verifyKeyMatchesAddress(pkHex, expectedAddress)) {
+        throw new Error(`Key reconstruction failed for withdrawal ${wrIdx}: address mismatch`);
+      }
+      finalPrivateKeyHex = pkHex;
     }
 
     keys.push({
       index: wrIdx,
-      private_key: privateKeyHex,
+      private_key: finalPrivateKeyHex,
       address: expectedAddress,
       key_index: expectedKeyIndex,
       merkle_root_id: keyshareData[0].merkleRootId,
@@ -173,7 +262,7 @@ Call \`get_supported_chains\` and \`get_available_denominations\` for current da
 **Option B: Relay withdrawal** (gas-free)
 - Call \`relay_withdraw\` with the key data.
 - The tool checks if relay is enabled first.
-- IMPORTANT: max_relayer_fee must be > 0 (default: 10% of amount). Setting it to 0 will fail.
+- IMPORTANT: max_relayer_fee must be > 0. Default is auto-calculated based on chain gas costs + protocol fee.
 - Use \`check_relay_status\` to poll the job until confirmed.
 
 **Option C: Combined deposit + claim**
@@ -517,15 +606,7 @@ server.tool(
       const signer = walletManager.getSigner(wallet_name, password, provider);
       const treasury = new ethers.Contract(chain.treasury_address, TREASURY_ABI, signer);
 
-      // Polygon chains need minimum 30 gwei priority fee
-      const gasOverrides: any = { gasLimit: 300000 };
-      const polygonIds = new Set([137, 80001, 80002]);
-      if (polygonIds.has(chain.chain_id)) {
-        const minTip = ethers.utils.parseUnits('30', 'gwei');
-        const feeData = await provider.getFeeData();
-        gasOverrides.maxPriorityFeePerGas = minTip;
-        gasOverrides.maxFeePerGas = feeData.maxFeePerGas?.gt(minTip) ? feeData.maxFeePerGas : minTip.mul(2);
-      }
+      const gasOverrides = await getChainGasOverrides(provider, chain.chain_id);
 
       let tx: ethers.ContractTransaction;
 
@@ -728,15 +809,7 @@ server.tool(
 
       const merkleProof = params.merkle_proof.map(p => p.startsWith('0x') ? p : '0x' + p);
 
-      // Polygon chains need minimum 25 gwei priority fee
-      const wGasOverrides: any = { gasLimit: 300000 };
-      const polygonChainIds = new Set([137, 80001, 80002]);
-      if (polygonChainIds.has(network.chainId)) {
-        const minTip = ethers.utils.parseUnits('30', 'gwei');
-        const feeData = await provider.getFeeData();
-        wGasOverrides.maxPriorityFeePerGas = minTip;
-        wGasOverrides.maxFeePerGas = feeData.maxFeePerGas?.gt(minTip) ? feeData.maxFeePerGas : minTip.mul(2);
-      }
+      const wGasOverrides = await getChainGasOverrides(provider, network.chainId);
 
       const treasury = new ethers.Contract(params.treasury_address, TREASURY_ABI, gasSigner);
       const tx = await treasury.withdraw(
@@ -788,7 +861,7 @@ server.tool(
     key_index: z.number().describe('Key index'),
     chain_name: z.string().describe('Chain name'),
     chain_type: z.string().optional().describe('Chain type: "evm" or "solana" (default: "evm")'),
-    max_relayer_fee: z.string().optional().describe('Max fee willing to pay the relayer in base units (e.g., "500000" for 0.5 USDC). Must be > 0 to cover gas. Defaults to 10% of amount.'),
+    max_relayer_fee: z.string().optional().describe('Max fee willing to pay the relayer in base units (e.g., "500000" for 0.5 USDC). Must be > 0 to cover gas. Auto-calculated from chain gas costs if omitted.'),
   },
   async (params) => {
     try {
@@ -807,11 +880,10 @@ server.tool(
       }
 
       const amountWei = ethers.utils.parseUnits(params.amount, params.token_decimals);
-      // Default maxRelayerFee to 10% of amount if not specified (must be > 0 to cover gas)
-      const defaultFee = amountWei.div(10);
+      const isNative = !params.token_address || params.token_address === ethers.constants.AddressZero;
       const maxRelayerFee = params.max_relayer_fee
         ? ethers.BigNumber.from(params.max_relayer_fee)
-        : (defaultFee.gt(0) ? defaultFee : ethers.BigNumber.from(1));
+        : estimateMaxRelayerFee(amountWei, network.chainId, isNative, relayInfo.protocol_fee_bps);
       const relayerAddress = relayInfo.evm_relayer_address || ethers.constants.AddressZero;
 
       const withdrawalSig = await createRelayWithdrawalSignature(
@@ -870,6 +942,329 @@ server.tool(
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     } catch (e: any) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+    }
+  },
+);
+
+// ─── Unified Withdraw Tool ──────────────────────────────────────────────────
+
+server.tool(
+  'withdraw',
+  'Smart withdrawal — automatically picks relay (private, gas-free) or direct based on preference and chain type. Supports both EVM and Solana. Default: relay for privacy (relayer address appears on-chain, not yours).',
+  {
+    withdrawal_key: z.string().describe('Private key from claim_keys result (hex with 0x prefix)'),
+    recipient: z.string().describe('Address to receive funds (EVM 0x... or Solana base58)'),
+    token_address: z.string().describe('Token contract address (EVM hex or Solana base58 mint). Zero address or empty for native.'),
+    amount: z.string().describe('Human-readable amount (e.g., "1" for 1 USDC)'),
+    token_decimals: z.number().describe('Token decimals (6 for USDC, 18 for ETH, 9 for SOL)'),
+    merkle_root_id: z.number().describe('Merkle root ID from claim_keys result'),
+    merkle_proof: z.array(z.string()).describe('Merkle proof from claim_keys result'),
+    key_index: z.number().describe('Key index from claim_keys result'),
+    chain_name: z.string().describe('Chain name (e.g., "sepolia", "solana-devnet")'),
+    treasury_address: z.string().describe('Treasury contract address from claim_keys result'),
+    wallet_name: z.string().describe('Wallet name to pay gas from (only used for direct withdrawal)'),
+    password: z.string().describe('Wallet password'),
+    method: z.enum(['relay', 'direct', 'auto']).optional().describe('Withdrawal method. "relay" = private (default), "direct" = self-submit, "auto" = relay if available else direct'),
+    max_relayer_fee: z.string().optional().describe('Max relay fee in base units. Auto-calculated from chain gas costs if omitted.'),
+  },
+  async (params) => {
+    try {
+      const chains = await api.getChains();
+      const chain = chains.find((c: any) => c.chain_name === params.chain_name);
+      if (!chain) return { content: [{ type: 'text', text: `Chain "${params.chain_name}" not found` }], isError: true };
+
+      const isSolana = chain.chain_type === 'solana';
+      const method = params.method || 'relay';
+
+      // Check relay availability
+      let relayAvailable = false;
+      let relayInfo: any = null;
+      if (method !== 'direct') {
+        try {
+          const resp = await api.getRelayInfo();
+          relayInfo = resp.info || resp;
+          relayAvailable = relayInfo.enabled !== false;
+        } catch { relayAvailable = false; }
+      }
+
+      const useRelay = method === 'relay'
+        ? relayAvailable
+        : method === 'direct'
+          ? false
+          : relayAvailable; // auto: prefer relay
+
+      if (method === 'relay' && !relayAvailable) {
+        return { content: [{ type: 'text', text: 'Relay service is disabled. Use method: "direct" or "auto" to fall back.' }], isError: true };
+      }
+
+      // ── Parse amounts ──
+      const amountBN = ethers.utils.parseUnits(params.amount, params.token_decimals);
+      const amountBigint = BigInt(amountBN.toString());
+      const isNativeToken = !params.token_address || params.token_address === ethers.constants.AddressZero
+        || params.token_address === '11111111111111111111111111111111';
+      const maxRelayerFee = params.max_relayer_fee
+        ? ethers.BigNumber.from(params.max_relayer_fee)
+        : estimateMaxRelayerFee(amountBN, chain.chain_id || 0, isNativeToken, relayInfo?.protocol_fee_bps);
+      const maxRelayerFeeBigint = BigInt(maxRelayerFee.toString());
+
+      // ── RELAY PATH ──
+      if (useRelay) {
+        if (isSolana) {
+          // Solana relay: Ed25519 signing
+          const seedHex = params.withdrawal_key.startsWith('0x') ? params.withdrawal_key.slice(2) : params.withdrawal_key;
+          const ed25519Seed = new Uint8Array(Buffer.from(seedHex, 'hex'));
+          const relayerAddr = relayInfo.solana_relayer_address;
+          if (!relayerAddr) return { content: [{ type: 'text', text: 'Solana relayer address not available in relay info' }], isError: true };
+
+          const { signature, publicKey } = await createSolanaRelaySignature(
+            ed25519Seed, params.recipient, params.token_address,
+            amountBigint, relayerAddr, maxRelayerFeeBigint,
+          );
+
+          // Derive treasury token account for SPL tokens
+          const isNativeSOL = !params.token_address || params.token_address === '' || params.token_address === '11111111111111111111111111111111';
+          let treasuryTokenAccount: string | undefined;
+          if (!isNativeSOL) {
+            const { PublicKey } = await import('@solana/web3.js');
+            const { getAssociatedTokenAddress } = await import('@solana/spl-token');
+            const programId = new PublicKey('5zjh95A1KgD6R7MidR6vDUCYAoKpmKcfNhMbRBkiLsmE');
+            const [treasuryPDA] = PublicKey.findProgramAddressSync([Buffer.from('treasury')], programId);
+            const tokenMint = new PublicKey(params.token_address);
+            const ata = await getAssociatedTokenAddress(tokenMint, treasuryPDA, true);
+            treasuryTokenAccount = ata.toString();
+          }
+
+          const merkleProof = params.merkle_proof.map(p => p.startsWith('0x') ? p : '0x' + p);
+          const result = await api.relayWithdraw({
+            chain: params.chain_name,
+            chainType: 'solana',
+            recipient: params.recipient,
+            amount: amountBN.toString(),
+            token: params.token_address,
+            signature: '0x' + signature,
+            merkleProof,
+            merkleRootId: params.merkle_root_id,
+            keyIndex: params.key_index,
+            maxRelayerFee: maxRelayerFee.toString(),
+            publicKey,
+            treasuryTokenAccount,
+          });
+
+          return { content: [{ type: 'text', text: JSON.stringify({
+            success: true, method: 'relay', chain: params.chain_name, chain_type: 'solana',
+            job_id: result.job_id || result.job?.id, ...result,
+          }, null, 2) }] };
+
+        } else {
+          // EVM relay: secp256k1 signing
+          const provider = new ethers.providers.JsonRpcProvider(chain.rpc_url);
+          const network = await provider.getNetwork();
+          const relayerAddress = relayInfo.evm_relayer_address || ethers.constants.AddressZero;
+
+          const withdrawalSig = await createRelayWithdrawalSignature(
+            params.withdrawal_key, params.recipient, params.token_address,
+            amountBN, params.merkle_root_id, params.key_index,
+            network.chainId, relayerAddress, maxRelayerFee,
+          );
+
+          const merkleProof = params.merkle_proof.map(p => p.startsWith('0x') ? p : '0x' + p);
+          const result = await api.relayWithdraw({
+            chain: params.chain_name,
+            chainType: 'evm',
+            recipient: params.recipient,
+            amount: amountBN.toString(),
+            token: params.token_address,
+            signature: withdrawalSig,
+            merkleProof,
+            merkleRootId: params.merkle_root_id,
+            keyIndex: params.key_index,
+            maxRelayerFee: maxRelayerFee.toString(),
+          });
+
+          return { content: [{ type: 'text', text: JSON.stringify({
+            success: true, method: 'relay', chain: params.chain_name, chain_type: 'evm',
+            job_id: result.job_id || result.job?.id, ...result,
+          }, null, 2) }] };
+        }
+      }
+
+      // ── DIRECT PATH ──
+      if (isSolana) {
+        // Solana direct withdrawal: build and send tx via @solana/web3.js
+        const { Connection, PublicKey, TransactionMessage, VersionedTransaction, Ed25519Program, SystemProgram, SYSVAR_INSTRUCTIONS_PUBKEY } = await import('@solana/web3.js');
+        const connection = new Connection(chain.rpc_url, 'confirmed');
+
+        const seedHex = params.withdrawal_key.startsWith('0x') ? params.withdrawal_key.slice(2) : params.withdrawal_key;
+        const ed25519Seed = new Uint8Array(Buffer.from(seedHex, 'hex'));
+
+        // Get the Solana wallet keypair for paying fees
+        const walletPrivKey = walletManager.getPrivateKey(params.wallet_name, params.password);
+        const { Keypair } = await import('@solana/web3.js');
+        const payerKeypair = Keypair.fromSecretKey(bs58.decode(walletPrivKey));
+
+        // Sign with Ed25519 OTS key
+        const { signature, publicKey } = await createSolanaWithdrawalSignature(
+          ed25519Seed, params.recipient, params.token_address, amountBigint,
+        );
+        const sigBytes = Buffer.from(signature, 'hex');
+        const otsPublicKey = bs58.decode(publicKey);
+
+        // Message hash for Ed25519 instruction
+        const messageHash = Buffer.from(ethers.utils.arrayify(ethers.utils.keccak256(
+          Buffer.concat([
+            Buffer.from(bs58.decode(params.recipient)),
+            params.token_address && params.token_address !== '' && !params.token_address.startsWith('0x')
+              ? Buffer.from(bs58.decode(params.token_address))
+              : Buffer.alloc(32),
+            (() => { const b = Buffer.alloc(8); b.writeBigUInt64LE(amountBigint); return b; })(),
+            (() => { const b = Buffer.alloc(8); b.writeBigUInt64LE(900n); return b; })(),
+          ])
+        )));
+
+        const ed25519Ix = Ed25519Program.createInstructionWithPublicKey({
+          publicKey: otsPublicKey,
+          message: messageHash,
+          signature: sigBytes,
+        });
+
+        // Derive PDAs
+        const programId = new PublicKey('5zjh95A1KgD6R7MidR6vDUCYAoKpmKcfNhMbRBkiLsmE');
+        const [treasuryPDA] = PublicKey.findProgramAddressSync([Buffer.from('treasury')], programId);
+
+        const merkleRootIdBuf = Buffer.alloc(8);
+        merkleRootIdBuf.writeBigUInt64LE(BigInt(params.merkle_root_id));
+        const [merkleRootPDA] = PublicKey.findProgramAddressSync([Buffer.from('merkroot'), merkleRootIdBuf], programId);
+
+        const keyIndexBuf = Buffer.alloc(8);
+        keyIndexBuf.writeBigUInt64LE(BigInt(params.key_index));
+        const [nullifierPDA] = PublicKey.findProgramAddressSync(
+          [Buffer.from('nullifr\0'), merkleRootIdBuf, keyIndexBuf], programId
+        );
+
+        const recipientPubkey = new PublicKey(params.recipient);
+        const isNativeSOL = !params.token_address || params.token_address === '' || params.token_address === '11111111111111111111111111111111';
+
+        // Build instruction data
+        const merkleProof = params.merkle_proof.map(p => {
+          const clean = p.startsWith('0x') ? p.slice(2) : p;
+          return Array.from(Buffer.from(clean, 'hex'));
+        });
+
+        // Discriminator + amount(u64) + merkleRootId(u32) + proofLen(u32) + proof + treeIndex(u32)
+        let discriminator: number[];
+        let accounts: any[];
+        const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+        const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');
+
+        if (isNativeSOL) {
+          discriminator = [113, 227, 26, 32, 53, 66, 90, 250]; // withdraw_native
+          accounts = [
+            { pubkey: treasuryPDA, isSigner: false, isWritable: true },
+            { pubkey: merkleRootPDA, isSigner: false, isWritable: true },
+            { pubkey: nullifierPDA, isSigner: false, isWritable: true },
+            { pubkey: recipientPubkey, isSigner: false, isWritable: true },
+            { pubkey: payerKeypair.publicKey, isSigner: true, isWritable: true },
+            { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+            { pubkey: SYSVAR_INSTRUCTIONS_PUBKEY, isSigner: false, isWritable: false },
+          ];
+        } else {
+          discriminator = [136, 235, 181, 5, 101, 109, 57, 81]; // withdraw_token
+          const tokenMint = new PublicKey(params.token_address);
+          const { getAssociatedTokenAddress } = await import('@solana/spl-token');
+          const recipientATA = await getAssociatedTokenAddress(tokenMint, recipientPubkey);
+          const treasuryATA = await getAssociatedTokenAddress(tokenMint, treasuryPDA, true);
+          const [tokenConfigPDA] = PublicKey.findProgramAddressSync(
+            [Buffer.from('token_config'), tokenMint.toBuffer()], programId
+          );
+
+          accounts = [
+            { pubkey: treasuryPDA, isSigner: false, isWritable: true },
+            { pubkey: tokenConfigPDA, isSigner: false, isWritable: true },
+            { pubkey: merkleRootPDA, isSigner: false, isWritable: true },
+            { pubkey: nullifierPDA, isSigner: false, isWritable: true },
+            { pubkey: tokenMint, isSigner: false, isWritable: false },
+            { pubkey: recipientPubkey, isSigner: false, isWritable: false },
+            { pubkey: recipientATA, isSigner: false, isWritable: true },
+            { pubkey: treasuryATA, isSigner: false, isWritable: true },
+            { pubkey: payerKeypair.publicKey, isSigner: true, isWritable: true },
+            { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+            { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+            { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+            { pubkey: SYSVAR_INSTRUCTIONS_PUBKEY, isSigner: false, isWritable: false },
+          ];
+        }
+
+        // Serialize instruction data
+        const proofBuf = Buffer.concat(merkleProof.map(p => Buffer.from(p)));
+        const ixData = Buffer.alloc(8 + 8 + 4 + 4 + proofBuf.length + 4);
+        let offset = 0;
+        Buffer.from(discriminator).copy(ixData, offset); offset += 8;
+        ixData.writeBigUInt64LE(amountBigint, offset); offset += 8;
+        ixData.writeUInt32LE(params.merkle_root_id, offset); offset += 4;
+        ixData.writeUInt32LE(merkleProof.length, offset); offset += 4;
+        proofBuf.copy(ixData, offset); offset += proofBuf.length;
+        ixData.writeUInt32LE(params.key_index, offset);
+
+        const { TransactionInstruction } = await import('@solana/web3.js');
+        const withdrawIx = new TransactionInstruction({ keys: accounts, programId, data: ixData });
+
+        const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+        const messageV0 = new TransactionMessage({
+          payerKey: payerKeypair.publicKey,
+          recentBlockhash: blockhash,
+          instructions: [ed25519Ix, withdrawIx],
+        }).compileToV0Message();
+
+        const tx = new VersionedTransaction(messageV0);
+        tx.sign([payerKeypair]);
+
+        const txSig = await connection.sendRawTransaction(tx.serialize(), {
+          skipPreflight: false,
+          preflightCommitment: 'confirmed',
+        });
+
+        // Wait for confirmation
+        await connection.confirmTransaction({ signature: txSig, blockhash, lastValidBlockHeight }, 'confirmed');
+
+        return { content: [{ type: 'text', text: JSON.stringify({
+          success: true, method: 'direct', chain: params.chain_name, chain_type: 'solana',
+          tx_hash: txSig,
+          explorer_url: `${chain.block_explorer.replace(/\/+$/, '')}/tx/${txSig}?cluster=devnet`,
+        }, null, 2) }] };
+
+      } else {
+        // EVM direct: existing logic
+        const walletPrivKey = walletManager.getPrivateKey(params.wallet_name, params.password);
+        const provider = new ethers.providers.JsonRpcProvider(chain.rpc_url);
+        const wallet = new ethers.Wallet(walletPrivKey, provider);
+        const network = await provider.getNetwork();
+
+        const withdrawalSig = await createWithdrawalSignature(
+          params.withdrawal_key, params.recipient, params.token_address,
+          amountBN, params.merkle_root_id, params.key_index, network.chainId,
+        );
+
+        const merkleProof = params.merkle_proof.map(p => p.startsWith('0x') ? p : '0x' + p);
+
+        const treasuryABI = [
+          'function withdraw(address token, address recipient, uint256 amount, uint256 merkleRootId, bytes calldata signature, bytes32[] calldata merkleProof, uint256 keyIndex) external',
+        ];
+        const treasury = new ethers.Contract(params.treasury_address, treasuryABI, wallet);
+        const tx = await treasury.withdraw(
+          params.token_address, params.recipient, amountBN,
+          params.merkle_root_id, withdrawalSig, merkleProof, params.key_index,
+        );
+        const receipt = await tx.wait();
+
+        return { content: [{ type: 'text', text: JSON.stringify({
+          success: true, method: 'direct', chain: params.chain_name, chain_type: 'evm',
+          tx_hash: receipt.transactionHash,
+          block_number: receipt.blockNumber,
+          explorer_url: `${chain.block_explorer}/tx/${receipt.transactionHash}`,
+        }, null, 2) }] };
+      }
+    } catch (e: any) {
+      return { content: [{ type: 'text', text: `Withdrawal failed: ${e.message}` }], isError: true };
     }
   },
 );
@@ -994,15 +1389,7 @@ server.tool(
       const signer = walletManager.getSigner(wallet_name, password, provider);
       const treasury = new ethers.Contract(chain.treasury_address, TREASURY_ABI, signer);
 
-      // Polygon gas
-      const gasOverrides: any = { gasLimit: 300000 };
-      const polygonIds = new Set([137, 80001, 80002]);
-      if (polygonIds.has(chain.chain_id)) {
-        const minTip = ethers.utils.parseUnits('30', 'gwei');
-        const feeData = await provider.getFeeData();
-        gasOverrides.maxPriorityFeePerGas = minTip;
-        gasOverrides.maxFeePerGas = feeData.maxFeePerGas?.gt(minTip) ? feeData.maxFeePerGas : minTip.mul(2);
-      }
+      const gasOverrides = await getChainGasOverrides(provider, chain.chain_id);
 
       let tx: ethers.ContractTransaction;
       if (isNative) {

@@ -8,7 +8,7 @@ import { ethers } from 'ethers';
 import bs58 from 'bs58';
 import { loadConfig } from './config.js';
 import { WalletManager } from './wallet.js';
-import { BlackBoxAPI } from './api.js';
+import { InterNullAPI } from './api.js';
 import {
   reconstructPrivateKey,
   verifyKeyMatchesAddress,
@@ -25,7 +25,7 @@ import {
 
 const config = loadConfig();
 const walletManager = new WalletManager(config.walletStorePath);
-const api = new BlackBoxAPI(config);
+const api = new InterNullAPI(config);
 
 // Per-chain minimum gas price floors matching the relayer's per-chain config.
 // Polygon requires >= 30 gwei; BNB >= 3 gwei; others are cheap (1 gwei).
@@ -200,17 +200,17 @@ async function processKeyshares(
 
 function createServer() {
 const server = new McpServer({
-  name: 'blackbox-protocol',
-  version: '0.1.0',
+  name: 'internull-protocol',
+  version: '0.3.0',
 });
 
 // ─── Agent Guide Resource ───────────────────────────────────────────────────
 
-const AGENT_GUIDE = `# BlackBox Protocol — Agent Workflow Guide
+const AGENT_GUIDE = `# InterNull Protocol: Agent Workflow Guide
 
-## What is BlackBox?
+## What is InterNull?
 A privacy protocol using Distributed Key Generation (DKG). You deposit tokens on one chain,
-receive threshold-reconstructed private keys, and withdraw on any supported chain — breaking
+receive threshold-reconstructed private keys, and withdraw on any supported chain, breaking
 the on-chain link between deposit and withdrawal.
 
 ## Supported Chains & Denominations
@@ -299,10 +299,10 @@ Call \`get_supported_chains\` and \`get_available_denominations\` for current da
 
 server.resource(
   'agent_guide',
-  'blackbox://agent-guide',
+  'internull://agent-guide',
   { mimeType: 'text/plain' },
   async () => ({
-    contents: [{ uri: 'blackbox://agent-guide', text: AGENT_GUIDE, mimeType: 'text/plain' }],
+    contents: [{ uri: 'internull://agent-guide', text: AGENT_GUIDE, mimeType: 'text/plain' }],
   }),
 );
 
@@ -462,7 +462,7 @@ server.tool(
 
 server.tool(
   'get_supported_chains',
-  'Get all chains supported by the BlackBox protocol, including RPC URLs, treasury addresses, and supported tokens.',
+  'Get all chains supported by the InterNull protocol, including RPC URLs, treasury addresses, and supported tokens.',
   {},
   async () => {
     try {
@@ -548,7 +548,7 @@ server.tool(
 
 server.tool(
   'deposit',
-  'Deposit funds into the BlackBox treasury contract. For ERC20 tokens, handles approval automatically. Returns the deposit transaction hash. You can pass either a token symbol (e.g., "USDC") or a token address.',
+  'Deposit funds into the InterNull treasury contract. For ERC20 tokens, handles approval automatically. Returns the deposit transaction hash. You can pass either a token symbol (e.g., "USDC") or a token address.',
   {
     wallet_name: z.string().describe('Wallet name to deposit from'),
     password: z.string().describe('Wallet password'),
@@ -1273,7 +1273,7 @@ server.tool(
 
 server.tool(
   'check_health',
-  'Check health and status of the BlackBox DKG network.',
+  'Check health and status of the InterNull DKG network.',
   {},
   async () => {
     try {
@@ -1575,7 +1575,7 @@ async function main() {
     });
 
     httpServer.listen(port, () => {
-      console.error(`BlackBox MCP server running on http://0.0.0.0:${port}/mcp`);
+      console.error(`InterNull MCP server running on http://0.0.0.0:${port}/mcp`);
       console.error(`Health check: http://0.0.0.0:${port}/health`);
     });
   } else {

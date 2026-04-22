@@ -1,4 +1,10 @@
 import { ethers } from 'ethers';
+import * as ed from '@noble/ed25519';
+import { sha512, sha256 } from '@noble/hashes/sha2.js';
+import bs58 from 'bs58';
+
+// Configure SHA-512 for @noble/ed25519 v3
+ed.hashes.sha512 = (...m: Uint8Array[]) => sha512(ed.etc.concatBytes(...m));
 
 const SECP256K1_N = BigInt('0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141');
 
@@ -68,9 +74,40 @@ export function reconstructPrivateKey(
   return { privateKey: result, privateKeyHex };
 }
 
+export function isSolanaAddress(address: string): boolean {
+  if (address.startsWith('0x')) return false;
+  const base58Regex = /^[1-9A-HJ-NP-Za-km-z]+$/;
+  return base58Regex.test(address) && address.length >= 32 && address.length <= 44;
+}
+
+export async function secp256k1ToEd25519Seed(secp256k1PrivKeyHex: string): Promise<Uint8Array> {
+  const signingKey = new ethers.utils.SigningKey(secp256k1PrivKeyHex);
+  let pubKeyHex = signingKey.compressedPublicKey;
+  if (pubKeyHex.startsWith('0x')) pubKeyHex = pubKeyHex.slice(2);
+  const pubKeyBytes = Buffer.from(pubKeyHex, 'hex');
+
+  const domainSeparator = new TextEncoder().encode('ed25519');
+  const combined = new Uint8Array(pubKeyBytes.length + domainSeparator.length);
+  combined.set(pubKeyBytes);
+  combined.set(domainSeparator, pubKeyBytes.length);
+
+  return sha256(combined);
+}
+
+export async function verifySolanaKeyMatchesAddress(privateKeyHex: string, expectedAddress: string): Promise<boolean> {
+  const seed = await secp256k1ToEd25519Seed(privateKeyHex);
+  const pubKey = await ed.getPublicKey(seed);
+  const solanaAddress = bs58.encode(pubKey);
+  return solanaAddress === expectedAddress;
+}
+
 export function verifyKeyMatchesAddress(privateKeyHex: string, expectedAddress: string): boolean {
   const wallet = new ethers.Wallet(privateKeyHex);
   return wallet.address.toLowerCase() === expectedAddress.toLowerCase();
+}
+
+export function getSolanaPrivateKeyFromSecp256k1(ed25519Seed: Uint8Array): string {
+  return '0x' + Buffer.from(ed25519Seed).toString('hex');
 }
 
 export function sortKeysRecursive(obj: any): any {
@@ -147,4 +184,79 @@ export function createRelayWithdrawalSignature(
   const messageHash = ethers.utils.keccak256(encoded);
   const wallet = new ethers.Wallet(privateKeyHex);
   return wallet.signMessage(ethers.utils.arrayify(messageHash));
+}
+
+// ── Solana Ed25519 signing ──
+
+const CHAIN_ID_SOLANA = 900n;
+
+function u64LE(value: bigint): Buffer {
+  const buf = Buffer.alloc(8);
+  buf.writeBigUInt64LE(value);
+  return buf;
+}
+
+function pubkeyBytes(base58Addr: string): Buffer {
+  if (!base58Addr || base58Addr === '' || base58Addr === '0x0000000000000000000000000000000000000000') {
+    return Buffer.alloc(32); // all zeros = native SOL
+  }
+  return Buffer.from(bs58.decode(base58Addr));
+}
+
+function solanaKeccak256(data: Buffer): Buffer {
+  return Buffer.from(
+    ethers.utils.arrayify(ethers.utils.keccak256(data))
+  );
+}
+
+// Direct withdrawal: keccak256(recipient[32] + token[32] + amount_le[8] + chainId_le[8])
+export async function createSolanaWithdrawalSignature(
+  ed25519Seed: Uint8Array,
+  recipient: string,
+  tokenAddress: string,
+  amount: bigint,
+): Promise<{ signature: string; publicKey: string }> {
+  const messageData = Buffer.concat([
+    pubkeyBytes(recipient),
+    pubkeyBytes(tokenAddress),
+    u64LE(amount),
+    u64LE(CHAIN_ID_SOLANA),
+  ]);
+  const messageHash = solanaKeccak256(messageData);
+
+  const signature = await ed.sign(messageHash, ed25519Seed);
+  const pubKey = await ed.getPublicKey(ed25519Seed);
+
+  return {
+    signature: Buffer.from(signature).toString('hex'),
+    publicKey: bs58.encode(pubKey),
+  };
+}
+
+// Relay withdrawal: keccak256(recipient[32] + token[32] + amount_le[8] + chainId_le[8] + relayer[32] + maxRelayerFee_le[8])
+export async function createSolanaRelaySignature(
+  ed25519Seed: Uint8Array,
+  recipient: string,
+  tokenAddress: string,
+  amount: bigint,
+  relayerAddress: string,
+  maxRelayerFee: bigint,
+): Promise<{ signature: string; publicKey: string }> {
+  const messageData = Buffer.concat([
+    pubkeyBytes(recipient),
+    pubkeyBytes(tokenAddress),
+    u64LE(amount),
+    u64LE(CHAIN_ID_SOLANA),
+    pubkeyBytes(relayerAddress),
+    u64LE(maxRelayerFee),
+  ]);
+  const messageHash = solanaKeccak256(messageData);
+
+  const signature = await ed.sign(messageHash, ed25519Seed);
+  const pubKey = await ed.getPublicKey(ed25519Seed);
+
+  return {
+    signature: Buffer.from(signature).toString('hex'),
+    publicKey: bs58.encode(pubKey),
+  };
 }

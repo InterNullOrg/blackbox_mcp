@@ -1,4 +1,4 @@
-import { BlackBoxConfig } from './config.js';
+import { InterNullConfig } from './config.js';
 
 export interface ChainInfo {
   chain_name: string;
@@ -47,10 +47,10 @@ export interface NodeKeyshareResponse {
   remaining_deposit: number;
 }
 
-export class BlackBoxAPI {
-  private config: BlackBoxConfig;
+export class InterNullAPI {
+  private config: InterNullConfig;
 
-  constructor(config: BlackBoxConfig) {
+  constructor(config: InterNullConfig) {
     this.config = config;
   }
 
@@ -184,26 +184,31 @@ export class BlackBoxAPI {
     merkleRootId: number;
     keyIndex: number;
     maxRelayerFee?: string;
+    publicKey?: string; // Ed25519 public key (base58), required for Solana
+    treasuryTokenAccount?: string; // Treasury ATA (base58), required for Solana SPL tokens
   }): Promise<any> {
     // Try coordinator node first, then others
     const errors: string[] = [];
     for (const nodeUrl of this.config.nodeUrls) {
       try {
+        const body: any = {
+          chain: params.chain,
+          chain_type: params.chainType,
+          recipient: params.recipient,
+          amount: params.amount,
+          token: params.token,
+          signature: params.signature,
+          merkle_proof: params.merkleProof,
+          merkle_root_id: params.merkleRootId,
+          key_index: params.keyIndex,
+          max_relayer_fee: params.maxRelayerFee || '0',
+        };
+        if (params.publicKey) body.public_key = params.publicKey;
+        if (params.treasuryTokenAccount) body.treasury_token_account = params.treasuryTokenAccount;
         const resp = await fetch(`${nodeUrl}/api/v2/relay/withdraw`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            chain: params.chain,
-            chain_type: params.chainType,
-            recipient: params.recipient,
-            amount: params.amount,
-            token: params.token,
-            signature: params.signature,
-            merkle_proof: params.merkleProof,
-            merkle_root_id: params.merkleRootId,
-            key_index: params.keyIndex,
-            max_relayer_fee: params.maxRelayerFee || '0',
-          }),
+          body: JSON.stringify(body),
         });
 
         const data = await resp.json();

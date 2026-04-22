@@ -1,11 +1,11 @@
 /**
- * Edge case tests for BlackBox MCP — exploring protocol boundaries
+ * Edge case tests for InterNull MCP — exploring protocol boundaries
  * Tests: double-spend, invalid denomination, wrong chain, native relay,
  *        swap quotes, denomination discovery, partial claims, occurrence_offset
  */
 import { ethers } from 'ethers';
-import { BlackBoxAPI } from './src/api.js';
-import { BlackBoxConfig, loadConfig } from './src/config.js';
+import { InterNullAPI } from './src/api.js';
+import { InterNullConfig, loadConfig } from './src/config.js';
 import { WalletManager } from './src/wallet.js';
 import { reconstructPrivateKey, createProofMessage, createWithdrawalSignature, createRelayWithdrawalSignature, verifyKeyMatchesAddress } from './src/crypto.js';
 
@@ -31,7 +31,7 @@ if (!process.env.DKG_NODE_1 && !process.env.DKG_NODE_URLS) {
 }
 
 const config = loadConfig();
-const api = new BlackBoxAPI(config);
+const api = new InterNullAPI(config);
 const walletManager = new WalletManager(config.walletStorePath);
 
 interface ChainInfo {

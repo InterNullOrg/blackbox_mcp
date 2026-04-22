@@ -1,18 +1,18 @@
-# BlackBox MCP Server
+# InterNull MCP Server
 
-A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that enables AI agents to interact with the [BlackBox Protocol](https://theblackbox.network) — a privacy-preserving, cross-chain payment system built on distributed threshold cryptography.
+A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that enables AI agents to interact with the [InterNull Protocol](https://internull.xyz), a privacy-preserving, cross-chain payment system built on distributed threshold cryptography.
 
 ## What is This?
 
 This MCP server gives any AI agent the ability to:
 
-- **Deposit** funds into the BlackBox treasury on any supported chain
+- **Deposit** funds into the InterNull treasury on any supported chain
 - **Claim** one-time-use private keys via 3-of-5 distributed key generation
 - **Withdraw** funds on any supported chain (including cross-chain)
 - **Relay** gas-free withdrawals via the built-in relayer
 - **Manage** wallets with encrypted local storage
 
-The agent never sees the full private key during key generation — each of the 5 DKG nodes only holds a share. The agent reconstructs the key locally using Lagrange interpolation over secp256k1.
+The agent never sees the full private key during key generation. Each of the 5 DKG nodes only holds a share. The agent reconstructs the key locally using Lagrange interpolation over secp256k1.
 
 ## Architecture
 
@@ -21,7 +21,7 @@ AI Agent (Claude, Cursor, Windsurf, custom agents)
     |
     | MCP Protocol (stdio)
     |
-BlackBox MCP Server
+InterNull MCP Server
     |
     |--- DKG Node 1 (theblackbox.network/node1)
     |--- DKG Node 2 (theblackbox.network/node2)
@@ -32,6 +32,8 @@ BlackBox MCP Server
     |--- EVM Chains (Sepolia, Base Sepolia, BNB Testnet, Polygon Amoy, Hyperliquid)
     |--- Solana (Devnet)
 ```
+
+The DKG node endpoints still resolve at `theblackbox.network`; that host is the canonical production mirror for the InterNull backend.
 
 ## Supported Chains & Denominations
 
@@ -54,7 +56,7 @@ BlackBox MCP Server
 | Solana Devnet | SOL | 0.1, 0.5, 1 |
 | Solana Devnet | USDC | 1, 2, 5 |
 
-> Use the `get_available_denominations` tool to query live denominations — new ones are added regularly.
+> Use the `get_available_denominations` tool to query live denominations. New ones are added regularly.
 
 ## Quick Start
 
@@ -66,6 +68,8 @@ cd blackbox_mcp
 npm install
 npm run build
 ```
+
+> The GitHub repo is still named `blackbox_mcp`. The published npm package is **`internull-mcp`**.
 
 ### 2. Configure Your MCP Client
 
@@ -79,7 +83,7 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
 ```json
 {
   "mcpServers": {
-    "blackbox": {
+    "internull": {
       "command": "node",
       "args": ["/absolute/path/to/blackbox_mcp/dist/index.js"],
       "env": {
@@ -103,7 +107,7 @@ Add to project `.mcp.json` or `~/.claude/settings.json`:
 ```json
 {
   "mcpServers": {
-    "blackbox": {
+    "internull": {
       "command": "node",
       "args": ["/absolute/path/to/blackbox_mcp/dist/index.js"],
       "env": {
@@ -127,7 +131,7 @@ Add to `.cursor/mcp.json` in your project root:
 ```json
 {
   "mcpServers": {
-    "blackbox": {
+    "internull": {
       "command": "node",
       "args": ["/absolute/path/to/blackbox_mcp/dist/index.js"],
       "env": {
@@ -151,7 +155,7 @@ Use `tsx` instead of `node` for development:
 ```json
 {
   "mcpServers": {
-    "blackbox": {
+    "internull": {
       "command": "npx",
       "args": ["tsx", "/absolute/path/to/blackbox_mcp/src/index.ts"],
       "env": {
@@ -178,6 +182,15 @@ Once configured, the agent automatically discovers all 18 tools. Example prompts
 "Check the health of the DKG network"
 "Move 0.05 ETH from Sepolia to Base Sepolia privately"
 ```
+
+## Migrating from `blackbox-mcp` v0.2.x
+
+Version 0.3.0 renames the published npm package from `blackbox-mcp` to `internull-mcp`. To migrate:
+
+1. Uninstall the old package (if installed globally): `npm uninstall -g blackbox-mcp`.
+2. Install the new one: `npm install -g internull-mcp` (or use `npx internull-mcp` in your MCP config).
+3. Update the `command` / `args` in your MCP config to point at `internull-mcp` instead of `blackbox-mcp`. Rename the `mcpServers` key from `"blackbox"` to `"internull"` if you want a cleaner identifier (it is an arbitrary label; any name works).
+4. **Your existing wallets are preserved.** The server looks in `~/.internull-mcp/wallets/` first and falls back to `~/.blackbox-mcp/wallets/` if only the legacy directory exists. No manual copy is required. If you want to move them explicitly, run `mv ~/.blackbox-mcp ~/.internull-mcp`.
 
 ## Available Tools (18)
 
@@ -217,7 +230,7 @@ Once configured, the agent automatically discovers all 18 tools. Example prompts
 
 ### Agent Guide Resource
 
-The server exposes a `blackbox://agent-guide` resource containing detailed instructions for agents — denomination rules, security model, error handling, and step-by-step workflows. MCP-compatible agents read this automatically.
+The server exposes an `internull://agent-guide` resource containing detailed instructions for agents: denomination rules, security model, error handling, and step-by-step workflows. MCP-compatible agents read this automatically.
 
 ## Environment Variables
 
@@ -226,10 +239,10 @@ The server exposes a `blackbox://agent-guide` resource containing detailed instr
 | `MCP_TRANSPORT` | Transport mode: `stdio` or `http` | `stdio` |
 | `PORT` | HTTP server port (when `MCP_TRANSPORT=http`) | `3001` |
 | `CORS_ORIGIN` | Allowed CORS origin (when `MCP_TRANSPORT=http`) | `*` |
-| `DKG_NODE_1` through `DKG_NODE_5` | Individual DKG node URLs | `http://localhost:8081-8085` |
+| `DKG_NODE_1` through `DKG_NODE_5` | Individual DKG node URLs | `https://theblackbox.network/node1..5` |
 | `DKG_NODE_URLS` | Comma-separated node URLs (alternative) | — |
 | `DKG_THRESHOLD` | Minimum shares needed for reconstruction | `3` |
-| `WALLET_STORE_PATH` | Path to encrypted wallet storage | `./wallets` |
+| `WALLET_STORE_PATH` | Path to encrypted wallet storage | `~/.internull-mcp/wallets` (falls back to `~/.blackbox-mcp/wallets` if legacy dir exists and new dir is empty) |
 
 ## Deployment
 
@@ -279,7 +292,7 @@ With pm2 for process management:
 
 ```bash
 npm install -g pm2
-MCP_TRANSPORT=http PORT=3001 pm2 start dist/index.js --name blackbox-mcp
+MCP_TRANSPORT=http PORT=3001 pm2 start dist/index.js --name internull-mcp
 pm2 save
 pm2 startup  # auto-start on reboot
 ```
@@ -313,7 +326,7 @@ server {
 | `/mcp` | POST | MCP Streamable HTTP endpoint (all tool calls go here) |
 | `/mcp` | GET | SSE stream for server-initiated messages |
 | `/mcp` | DELETE | Close session |
-| `/health` | GET | Health check — returns `{"status":"ok","sessions":N}` |
+| `/health` | GET | Health check. Returns `{"status":"ok","sessions":N}` |
 
 ### Connecting Web Agents to Hosted Server
 
@@ -338,10 +351,10 @@ const result = await client.callTool('check_health', {});
 
 ```bash
 # Install globally
-npm install -g @anthropic-ai/blackbox-mcp
+npm install -g internull-mcp
 
 # Then use in MCP config:
-# "command": "blackbox-mcp"
+# "command": "internull-mcp"
 ```
 
 Or use npx without installing:
@@ -349,9 +362,9 @@ Or use npx without installing:
 ```json
 {
   "mcpServers": {
-    "blackbox": {
+    "internull": {
       "command": "npx",
-      "args": ["@anthropic-ai/blackbox-mcp"],
+      "args": ["internull-mcp"],
       "env": {
         "DKG_NODE_1": "https://theblackbox.network/node1",
         "DKG_NODE_2": "https://theblackbox.network/node2",
@@ -407,7 +420,7 @@ Deposits on chain A can generate withdrawal keys for chain B. Requirements:
 
 | Property | Implementation |
 |----------|---------------|
-| No single point of failure | 3-of-5 threshold — any 3 nodes reconstruct, no pair can |
+| No single point of failure | 3-of-5 threshold. Any 3 nodes reconstruct, no pair can. |
 | One-time keys | On-chain nullifier prevents reuse |
 | Wallet encryption | AES-256-GCM with PBKDF2 (100k iterations) |
 | Request authentication | ECDSA/Ed25519 signature on every keyshare request |
@@ -467,21 +480,21 @@ npx tsx test-idempotency-splits.ts
 
 ### Test Results (Verified)
 
-- 200 keys generated across test runs — all reconstructed successfully
-- 2000 share combinations tested (10 per key) — all passed
-- All key_indexes and addresses are unique per batch
-- Re-claims return identical keys (verified 3 times independently)
-- Backend rejects different claim configs for same deposit (UTXO model)
-- Key retrieval: ~52s for 100 keys (P2P mini-VSS exchange)
-- Local reconstruction: ~5ms per key (Lagrange interpolation)
+- 200 keys generated across test runs. All reconstructed successfully.
+- 2000 share combinations tested (10 per key). All passed.
+- All key_indexes and addresses are unique per batch.
+- Re-claims return identical keys (verified 3 times independently).
+- Backend rejects different claim configs for same deposit (UTXO model).
+- Key retrieval: ~52s for 100 keys (P2P mini-VSS exchange).
+- Local reconstruction: ~5ms per key (Lagrange interpolation).
 
 ## Project Structure
 
 ```
 blackbox_mcp/
 ├── src/
-│   ├── index.ts          # MCP server — 18 tools + agent guide resource (stdio + HTTP)
-│   ├── api.ts            # BlackBox API client (DKG node communication)
+│   ├── index.ts          # MCP server: 18 tools + agent guide resource (stdio + HTTP)
+│   ├── api.ts            # InterNull API client (DKG node communication)
 │   ├── config.ts         # Environment configuration loader
 │   ├── crypto.ts         # Lagrange interpolation, ECDSA signatures, key reconstruction
 │   └── wallet.ts         # Encrypted wallet manager (AES-256-GCM + PBKDF2)

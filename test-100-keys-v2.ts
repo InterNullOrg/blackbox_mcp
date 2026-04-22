@@ -6,7 +6,7 @@
  */
 import { ethers } from 'ethers';
 import * as fs from 'fs';
-import { BlackBoxAPI } from './src/api.js';
+import { InterNullAPI } from './src/api.js';
 import { loadConfig } from './src/config.js';
 import { WalletManager } from './src/wallet.js';
 import { reconstructPrivateKey, createProofMessage, verifyKeyMatchesAddress } from './src/crypto.js';
@@ -25,7 +25,7 @@ const WALLET_NAME = 'test-agent';
 const WALLET_PASSWORD = 'test-password-123';
 
 const config = loadConfig();
-const api = new BlackBoxAPI(config);
+const api = new InterNullAPI(config);
 const walletManager = new WalletManager(config.walletStorePath);
 
 function combinations<T>(arr: T[], k: number): T[][] {

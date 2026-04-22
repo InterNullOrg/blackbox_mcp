@@ -1,10 +1,10 @@
 /**
- * End-to-end test script for BlackBox MCP server
+ * End-to-end test script for InterNull MCP server
  * Tests: cross-chain, relay, multi-chain split, edge cases
  */
 import { ethers } from 'ethers';
-import { BlackBoxAPI } from './src/api.js';
-import { BlackBoxConfig, loadConfig } from './src/config.js';
+import { InterNullAPI } from './src/api.js';
+import { InterNullConfig, loadConfig } from './src/config.js';
 import { WalletManager } from './src/wallet.js';
 import { reconstructPrivateKey, createProofMessage, createWithdrawalSignature, verifyKeyMatchesAddress } from './src/crypto.js';
 
@@ -30,7 +30,7 @@ if (!process.env.DKG_NODE_1 && !process.env.DKG_NODE_URLS) {
 }
 
 const config = loadConfig();
-const api = new BlackBoxAPI(config);
+const api = new InterNullAPI(config);
 const walletManager = new WalletManager(config.walletStorePath);
 
 // Allow importing a pre-funded wallet via env var

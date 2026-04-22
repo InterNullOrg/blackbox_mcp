@@ -1,11 +1,11 @@
 {
-  "name": "blackbox-mcp",
-  "version": "0.2.1",
-  "description": "MCP server for AI agents to interact with the BlackBox privacy protocol — deposit, claim keys, withdraw across chains via 3-of-5 distributed threshold cryptography",
+  "name": "internull-mcp",
+  "version": "0.3.0",
+  "description": "MCP server for AI agents to interact with the InterNull privacy protocol: deposit, claim keys, withdraw across chains via 3-of-5 distributed threshold cryptography",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "blackbox-mcp": "dist/index.js"
+    "internull-mcp": "dist/index.js"
   },
   "scripts": {
     "build": "tsc",
@@ -32,7 +32,7 @@
     "type": "git",
     "url": "https://github.com/InterNullOrg/blackbox_mcp.git"
   },
-  "homepage": "https://theblackbox.network",
+  "homepage": "https://internull.xyz",
   "license": "MIT",
   "files": [
     "dist",

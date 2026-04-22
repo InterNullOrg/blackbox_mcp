@@ -5,7 +5,7 @@
  */
 import { ethers } from 'ethers';
 import * as fs from 'fs';
-import { BlackBoxAPI } from './src/api.js';
+import { InterNullAPI } from './src/api.js';
 import { loadConfig } from './src/config.js';
 import { WalletManager } from './src/wallet.js';
 import { reconstructPrivateKey, createProofMessage, verifyKeyMatchesAddress } from './src/crypto.js';
@@ -22,7 +22,7 @@ const DEPOSIT_TX_HASH = '0xa635cdfbd24596396694a5d9d70a63a49efac987400e6163c352b
 const SOURCE_CHAIN = 'sepolia';
 
 const config = loadConfig();
-const api = new BlackBoxAPI(config);
+const api = new InterNullAPI(config);
 const walletManager = new WalletManager(config.walletStorePath);
 
 // Load original keys for comparison

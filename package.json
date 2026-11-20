@@ -40,7 +40,7 @@
     "LICENSE"
   ],
   "engines": {
-    "node": ">=22.23.4"
+    "node": ">=22.23.5"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
